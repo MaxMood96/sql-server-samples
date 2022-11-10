@@ -46,7 +46,7 @@
     "rollup-plugin-babel": "^2.7.1",
     "rollup-stream": "=1.23",
     "run-sequence": "^2.0.0",
-    "vinyl-buffer": "^1.0.0",
+    "vinyl-buffer": "^1.0.1",
     "vinyl-source-stream": "^1.1.0",
     "web-component-tester": "^6.4.1"
   },
