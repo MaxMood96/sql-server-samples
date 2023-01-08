@@ -38,8 +38,8 @@
     "es6-promise": "^4.1.1",
     "eslint": "^4.13.1",
     "google-closure-compiler": "^20171203.0.0",
-    "gulp": "^3.8.8",
-    "gulp-add-src": "^0.2.0",
+    "gulp": "^4.0.0",
+    "gulp-add-src": "^1.0.0",
     "gulp-header": "^1.8.9",
     "gulp-rename": "^1.2.2",
     "gulp-sourcemaps": "^2.4.1",
@@ -48,7 +48,7 @@
     "run-sequence": "^2.0.0",
     "vinyl-buffer": "^1.0.0",
     "vinyl-source-stream": "^1.1.0",
-    "web-component-tester": "^6.4.1"
+    "web-component-tester": "^6.7.0"
   },
   "publishConfig": {
     "access": "public"
