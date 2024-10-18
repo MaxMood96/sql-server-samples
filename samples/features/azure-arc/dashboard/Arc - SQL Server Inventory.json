@@ -1,10 +1,10 @@
 {
   "properties": {
     "lenses": [
-      {
+       {
         "order": 0,
         "parts": [
-          {
+           {
             "position": {
               "x": 0,
               "y": 0,
@@ -25,7 +25,7 @@
               }
             }
           },
-          {
+           {
             "position": {
               "x": 0,
               "y": 2,
@@ -77,7 +77,7 @@
               }
             }
           },
-          {
+           {
             "position": {
               "x": 3,
               "y": 2,
@@ -181,7 +181,7 @@
               }
             }
           },
-        {
+           {
             "position": {
               "x": 0,
               "y": 6,
@@ -234,7 +234,7 @@
               }
             }
           },
-          {
+           {
             "position": {
               "x": 0,
               "y": 11,
@@ -287,7 +287,7 @@
               }
             }
           },
-          {
+           {
             "position": {
               "x": 0,
               "y": 16,
@@ -336,11 +336,11 @@
               "settings": {},
               "partHeader": {
                 "title": "Compatibility Level",
-                "subtitle": "Count of databases by compatibilty level"
+                "subtitle": "Count of databases by compatabilty level"
               }
             }
           },
-          {
+           {
             "position": {
               "x": 0,
               "y": 21,
@@ -446,7 +446,7 @@
               }
             }
           },
-          {
+           {
             "position": {
               "x": 12,
               "y": 21,
@@ -499,7 +499,7 @@
               }
             }
           },
-          {
+           {
             "position": {
               "x": 0,
               "y": 27,
@@ -548,11 +548,11 @@
               "settings": {},
               "partHeader": {
                 "title": "SQL Server Edition Summary",
-                "subtitle": "Count of SQL Server instances by **instsance** license type and edition"
+                "subtitle": "Count of SQL Server instances by **instances** license type and edition"
               }
             }
           },
-          {
+           {
             "position": {
               "x": 12,
               "y": 27,
@@ -606,7 +606,7 @@
               }
             }
           },
-         {
+           {
             "position": {
               "x": 0,
               "y": 34,
@@ -627,7 +627,7 @@
               }
             }
           },
-         {
+           {
             "position": {
               "x": 0,
               "y": 35,
@@ -680,7 +680,7 @@
               }
             }
           },
-       {
+           {
             "position": {
               "x": 0,
               "y": 42,
@@ -731,7 +731,7 @@
               },
               "partHeader": {
                 "title": "SQL Server Instances by Location",
-                "subtitle": "SQL Servers instasnces by \"Location\" tag values"
+                "subtitle": "SQL Servers instances by \"Location\" tag values"
               }
             }
           },
@@ -785,7 +785,7 @@
                 "content": {}
               },
               "partHeader": {
-                "title": "SQL Server Instasnces by Data Center",
+                "title": "SQL Server Instances by Data Center",
                 "subtitle": "SQL Servers instances by \"Datacenter\" tag values."
               }
             }
@@ -868,5 +868,5 @@
   "tags": {
     "hidden-title": "Arc - SQL Server Inventory"
   },
-  "apiVersion": "2015-08-01-preview"
+  "apiVersion": "2022-12-01-preview"
 }
