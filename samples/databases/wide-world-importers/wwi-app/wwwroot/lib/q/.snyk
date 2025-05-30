@@ -1,0 +1,81 @@
+# Snyk (https://snyk.io) policy file, patches or ignores known vulnerabilities.
+version: v1.25.1
+ignore: {}
+# patches apply the minimum changes required to fix a vulnerability
+patch:
+  'npm:hawk:20160119':
+    - jasminum > wd > request > hawk:
+        patched: '2023-08-29T18:39:24.737Z'
+        id: 'npm:hawk:20160119'
+        path: jasminum > wd > request > hawk
+  'npm:http-signature:20150122':
+    - jasminum > wd > request > http-signature:
+        patched: '2023-08-29T18:39:24.737Z'
+        id: 'npm:http-signature:20150122'
+        path: jasminum > wd > request > http-signature
+  'npm:mime:20170907':
+    - jasminum > wd > request > mime:
+        patched: '2023-08-29T18:39:24.737Z'
+        id: 'npm:mime:20170907'
+        path: jasminum > wd > request > mime
+    - jasminum > wd > request > form-data > mime:
+        patched: '2023-08-29T18:39:24.737Z'
+        id: 'npm:mime:20170907'
+        path: jasminum > wd > request > form-data > mime
+  'npm:minimatch:20160620':
+    - jasminum > glob > minimatch:
+        patched: '2023-08-29T18:39:24.737Z'
+        id: 'npm:minimatch:20160620'
+        path: jasminum > glob > minimatch
+    - jasminum > mr > istanbul > fileset > glob > minimatch:
+        patched: '2023-08-29T18:39:24.737Z'
+        id: 'npm:minimatch:20160620'
+        path: jasminum > mr > istanbul > fileset > glob > minimatch
+    - jasminum > mr > istanbul > fileset > minimatch:
+        patched: '2023-08-29T18:39:24.737Z'
+        id: 'npm:minimatch:20160620'
+        path: jasminum > mr > istanbul > fileset > minimatch
+    - jasminum > wd > archiver > file-utils > minimatch:
+        patched: '2023-08-29T18:39:24.737Z'
+        id: 'npm:minimatch:20160620'
+        path: jasminum > wd > archiver > file-utils > minimatch
+    - jasminum > wd > archiver > file-utils > glob > minimatch:
+        patched: '2023-08-29T18:39:24.737Z'
+        id: 'npm:minimatch:20160620'
+        path: jasminum > wd > archiver > file-utils > glob > minimatch
+    - jasminum > wd > archiver > file-utils > findup-sync > glob > minimatch:
+        patched: '2023-08-29T18:39:24.737Z'
+        id: 'npm:minimatch:20160620'
+        path: jasminum > wd > archiver > file-utils > findup-sync > glob > minimatch
+  'npm:qs:20140806-1':
+    - jasminum > qs:
+        patched: '2023-08-29T18:39:24.737Z'
+        id: 'npm:qs:20140806-1'
+        path: jasminum > qs
+    - jasminum > q-io > qs:
+        patched: '2023-08-29T18:39:24.737Z'
+        id: 'npm:qs:20140806-1'
+        path: jasminum > q-io > qs
+    - jasminum > joey > q-io > qs:
+        patched: '2023-08-29T18:39:24.737Z'
+        id: 'npm:qs:20140806-1'
+        path: jasminum > joey > q-io > qs
+    - jasminum > wd > request > qs:
+        patched: '2023-08-29T18:39:24.737Z'
+        id: 'npm:qs:20140806-1'
+        path: jasminum > wd > request > qs
+  'npm:request:20160119':
+    - jasminum > wd > request:
+        patched: '2023-08-29T18:39:24.737Z'
+        id: 'npm:request:20160119'
+        path: jasminum > wd > request
+  'npm:tunnel-agent:20170305':
+    - jasminum > wd > request > tunnel-agent:
+        patched: '2023-08-29T18:39:24.737Z'
+        id: 'npm:tunnel-agent:20170305'
+        path: jasminum > wd > request > tunnel-agent
+  'npm:uglify-js:20151024':
+    - jasminum > mr > istanbul > handlebars > uglify-js:
+        patched: '2023-08-29T18:39:24.737Z'
+        id: 'npm:uglify-js:20151024'
+        path: jasminum > mr > istanbul > handlebars > uglify-js
