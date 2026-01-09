@@ -1,0 +1,23 @@
+# Snyk (https://snyk.io) policy file, patches or ignores known vulnerabilities.
+version: v1.25.0
+ignore: {}
+# patches apply the minimum changes required to fix a vulnerability
+patch:
+  'npm:extend:20180424':
+    - gulp > gulp-cli > liftoff > extend:
+        patched: '2023-01-11T03:58:25.374Z'
+    - gulp > vinyl-fs > glob-stream > extend:
+        patched: '2023-01-11T03:58:25.374Z'
+    - gulp-add-src > vinyl-fs > glob-stream > extend:
+        patched: '2023-01-11T03:58:25.374Z'
+  SNYK-JS-LODASH-567746:
+    - web-component-tester > polyserve > polymer-build > polymer-bundler > babel-types > lodash:
+        patched: '2023-01-11T03:58:25.374Z'
+    - web-component-tester > polyserve > polymer-build > polymer-bundler > babel-generator > lodash:
+        patched: '2023-01-11T03:58:25.374Z'
+    - web-component-tester > polyserve > polymer-build > polymer-bundler > babel-traverse > lodash:
+        patched: '2023-01-11T03:58:25.374Z'
+    - web-component-tester > polyserve > polymer-build > polymer-bundler > babel-generator > babel-types > lodash:
+        patched: '2023-01-11T03:58:25.374Z'
+    - web-component-tester > polyserve > polymer-build > polymer-bundler > babel-traverse > babel-types > lodash:
+        patched: '2023-01-11T03:58:25.374Z'
