@@ -50,7 +50,7 @@
     "promises-aplus-tests": "^1.0.2",
     "istanbul": "^0.2.4",
     "matcha": "^0.2.0",
-    "grunt": "^0.4.1",
+    "grunt": "^1.5.3",
     "grunt-cli": "^0.1.9",
     "grunt-contrib-uglify": "^0.2.2",
     "grunt-contrib-clean": "^0.5.0",
