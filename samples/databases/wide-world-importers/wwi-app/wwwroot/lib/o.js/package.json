@@ -9,7 +9,7 @@
   },
   "devDependencies": {
     "jslint": "^0.10.3",
-    "jasmine": "*",
+    "jasmine": "3.1.0",
     "uglify-js": "*"
   },
   "scripts": {
