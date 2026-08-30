@@ -42,7 +42,7 @@
     "gulp-add-src": "^1.0.0",
     "gulp-header": "^1.8.9",
     "gulp-rename": "^1.2.2",
-    "gulp-sourcemaps": "^2.4.1",
+    "gulp-sourcemaps": "^3.0.0",
     "rollup-plugin-babel": "^4.4.0",
     "rollup-stream": "=1.23",
     "run-sequence": "^2.0.0",
