@@ -387,6 +387,84 @@ Describe 'Get-ShrinkStopOutcome' {
     It 'uses a Ctrl+C reason for the Ctrl+C cause' {
         (Get-ShrinkStopOutcome -StartAllocMB 1000 -FinalAllocMB 600 -Cause 'Ctrl+C').Reason | Should -Match 'Ctrl\+C'
     }
+    It 'uses a transaction-log reason for the LogFull cause' {
+        (Get-ShrinkStopOutcome -StartAllocMB 1000 -FinalAllocMB 600 -Cause 'LogFull').Reason | Should -Match 'transaction log safety limit'
+    }
+    It 'uses a version-store reason for the PvsGrowth cause' {
+        (Get-ShrinkStopOutcome -StartAllocMB 1000 -FinalAllocMB 600 -Cause 'PvsGrowth').Reason | Should -Match 'version store'
+    }
+    It 'still classifies by size for a safety-valve cause' {
+        (Get-ShrinkStopOutcome -StartAllocMB 1000 -FinalAllocMB 600 -Cause 'LogFull').Bucket | Should -Be 'PartlyShrunk'
+    }
+}
+
+Describe 'Test-ShrinkResourcePressure' {
+    It 'breaches LogFull when log used reaches the threshold percentage of the ceiling' {
+        $r = Test-ShrinkResourcePressure -LogUsedBytes 60 -LogCeilingBytes 100 -MaxLogUsedPercent 60 -PvsKb 0 -FreeForGrowthKb 100 -MaxPvsPercentOfFreeSpace 80
+        $r.Breach | Should -Be 'LogFull'
+        $r.LogPercent | Should -Be 60
+    }
+    It 'does not breach the log below the threshold' {
+        (Test-ShrinkResourcePressure -LogUsedBytes 59 -LogCeilingBytes 100 -MaxLogUsedPercent 60 -PvsKb 0 -FreeForGrowthKb 100 -MaxPvsPercentOfFreeSpace 80).Breach | Should -Be ''
+    }
+    It 'treats a log threshold of 0 as disabled even at 100% used' {
+        (Test-ShrinkResourcePressure -LogUsedBytes 100 -LogCeilingBytes 100 -MaxLogUsedPercent 0 -PvsKb 0 -FreeForGrowthKb 100 -MaxPvsPercentOfFreeSpace 0).Breach | Should -Be ''
+    }
+    It 'treats a zero log ceiling with used log as fully consumed' {
+        (Test-ShrinkResourcePressure -LogUsedBytes 10 -LogCeilingBytes 0 -MaxLogUsedPercent 60 -PvsKb 0 -FreeForGrowthKb 100 -MaxPvsPercentOfFreeSpace 80).Breach | Should -Be 'LogFull'
+    }
+    It 'breaches PvsGrowth when PVS reaches the threshold percentage of the runway' {
+        $r = Test-ShrinkResourcePressure -LogUsedBytes 0 -LogCeilingBytes 100 -MaxLogUsedPercent 60 -PvsKb 80 -FreeForGrowthKb 100 -MaxPvsPercentOfFreeSpace 80
+        $r.Breach | Should -Be 'PvsGrowth'
+        $r.PvsPercent | Should -Be 80
+    }
+    It 'treats zero runway with PVS present as a PVS breach' {
+        (Test-ShrinkResourcePressure -LogUsedBytes 0 -LogCeilingBytes 100 -MaxLogUsedPercent 60 -PvsKb 1 -FreeForGrowthKb 0 -MaxPvsPercentOfFreeSpace 80).Breach | Should -Be 'PvsGrowth'
+    }
+    It 'does not breach PVS when runway is zero and there is no PVS' {
+        (Test-ShrinkResourcePressure -LogUsedBytes 0 -LogCeilingBytes 100 -MaxLogUsedPercent 60 -PvsKb 0 -FreeForGrowthKb 0 -MaxPvsPercentOfFreeSpace 80).Breach | Should -Be ''
+    }
+    It 'checks the log before PVS when both would breach' {
+        (Test-ShrinkResourcePressure -LogUsedBytes 100 -LogCeilingBytes 100 -MaxLogUsedPercent 60 -PvsKb 100 -FreeForGrowthKb 100 -MaxPvsPercentOfFreeSpace 80).Breach | Should -Be 'LogFull'
+    }
+}
+
+Describe 'Format-ShrinkSafetyValveMessage' {
+    It 'says the log frees after rollback when a shrink worker holds it' {
+        $m = Format-ShrinkSafetyValveMessage -Breach 'LogFull' -LogPercent 61 -PvsPercent 0 -LogReuseWaitDesc 'ACTIVE_TRANSACTION' -HolderText 'session 71 (MoveBlobPage, worker 3)' -HolderSpid 71 -HolderIsWorker $true
+        $m | Should -Match 'Log 61% of max'
+        $m | Should -Match 'worker 3'
+        $m | Should -Match "rollback completes"
+    }
+    It 'names the blocking session when a non-worker holds the log' {
+        $m = Format-ShrinkSafetyValveMessage -Breach 'LogFull' -LogPercent 61 -PvsPercent 0 -LogReuseWaitDesc 'ACTIVE_TRANSACTION' -HolderText 'session 88 (usr_bulkload, not a shrink worker)' -HolderSpid 88 -HolderIsWorker $false
+        $m | Should -Match 'not a shrink worker'
+        $m | Should -Match 'transaction on session 88 completes'
+    }
+    It 'reports a non-transaction reuse wait for the log' {
+        $m = Format-ShrinkSafetyValveMessage -Breach 'LogFull' -LogPercent 61 -PvsPercent 0 -LogReuseWaitDesc 'LOG_BACKUP'
+        $m | Should -Match 'Reuse wait is LOG_BACKUP'
+        $m | Should -Match "won't free the log"
+    }
+    It 'says PVS cleanup resumes after rollback when a shrink worker pins the watermark' {
+        $m = Format-ShrinkSafetyValveMessage -Breach 'PvsGrowth' -LogPercent 0 -PvsPercent 82 -PvsKb (410*1048576) -FreeForGrowthKb (500*1048576) -HolderText 'session 71 (MoveBlobPage, worker 3)' -HolderSpid 71 -HolderIsWorker $true
+        $m | Should -Match 'PVS 82% of growth runway \(410\.0 GiB / 500\.0 GiB\)'
+        $m | Should -Match 'low watermark'
+        $m | Should -Match 'PVS cleanup resumes'
+    }
+    It 'uses natural size units so a small PVS or log size is not rounded to 0' {
+        $m = Format-ShrinkSafetyValveMessage -Breach 'PvsGrowth' -LogPercent 0 -PvsPercent 6 -PvsKb (132*1024) -FreeForGrowthKb (1884*1024)
+        $m | Should -Match 'PVS 6% of growth runway \(132\.0 MiB / 1\.8 GiB\)'
+    }
+    It 'names the pinning session when a non-worker holds the watermark' {
+        $m = Format-ShrinkSafetyValveMessage -Breach 'PvsGrowth' -LogPercent 0 -PvsPercent 82 -PvsKb (410*1048576) -FreeForGrowthKb (500*1048576) -HolderText 'session 88 (usr_bulkload, not a shrink worker)' -HolderSpid 88 -HolderIsWorker $false
+        $m | Should -Match 'transaction on session 88 completes'
+    }
+    It 'appends the fallback caveat when a file ceiling is unknown' {
+        $m = Format-ShrinkSafetyValveMessage -Breach 'PvsGrowth' -LogPercent 0 -PvsPercent 82 -PvsKb 1 -FreeForGrowthKb 1 -FallbackFiles '1,3'
+        $m | Should -Match 'max size unset on file\(s\) 1,3'
+        $m | Should -Match 'may be premature'
+    }
 }
 
 Describe 'Get-ShrinkTotalsRows' {

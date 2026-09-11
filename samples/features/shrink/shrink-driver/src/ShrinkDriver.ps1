@@ -1,5 +1,5 @@
 <#PSScriptInfo
-.VERSION 1.1.0
+.VERSION 1.2.0
 .GUID 1b801c08-f374-45df-ba3e-34d9983e9133
 .AUTHOR Microsoft
 .COMPANYNAME Microsoft
@@ -92,6 +92,16 @@ function Invoke-ShrinkDriver {
       Retry attempts per file for transient failures (default 5, range 0-50; 0 disables retries).
     .PARAMETER MaxRuntimeMinutes
       Optional overall time budget; the run stops when it is reached.
+    .PARAMETER MaxLogUsedPercent
+      Safety valve (on by default). If the transaction log reaches this percentage of its maximum size,
+      the run stops so shrink does not contribute to an out-of-log condition. Default 60; 0 disables the
+      log check. Avoid setting very high to enable rollback of any fully logged transactions. When a log
+      file has no maximum size set, its current size is used as the ceiling.
+    .PARAMETER MaxPvsPercentOfFreeSpace
+      Safety valve (on by default). If the persistent version store (PVS) reaches this percentage of the
+      free space it can still grow into (data-file unallocated space plus remaining growth to the maximum
+      size), the run stops so shrink does not grow the database. Default 80; 0 disables the PVS check.
+      When a data file has no maximum size set, its current size is used as the ceiling.
     .PARAMETER StepGiB
       Increment size used for gradual shrinking (default 20 GiB).
     .PARAMETER MinReclaimGiB
@@ -139,6 +149,9 @@ function Invoke-ShrinkDriver {
         [ValidateRange(0, [int]::MaxValue)][Nullable[int]]$FileTargetSizeGiB = $null,
         [ValidateRange(0, 50)][int]$RetryCount = 5,
         [ValidateRange(1, [int]::MaxValue)][Nullable[int]]$MaxRuntimeMinutes = $null,
+
+        [ValidateRange(0, 100)][int]$MaxLogUsedPercent = 60,
+        [ValidateRange(0, 100)][int]$MaxPvsPercentOfFreeSpace = 80,
 
         [ValidateRange(1, [int]::MaxValue)][int]$StepGiB = 20,
         [ValidateRange(0, [int]::MaxValue)][int]$MinReclaimGiB = 1,
@@ -244,12 +257,17 @@ function Invoke-ShrinkDriver {
         "MinReclaimGiB    : $MinReclaimGiB"
         "RetryCount       : $RetryCount"
         "MaxRuntimeMinutes: $(if ($null -ne $MaxRuntimeMinutes) { [int]$MaxRuntimeMinutes } else { '(none)' })"
+        "MaxLogUsed%      : $(if ($MaxLogUsedPercent -gt 0) { "$MaxLogUsedPercent%" } else { '(disabled)' })"
+        "MaxPvs%OfFree    : $(if ($MaxPvsPercentOfFreeSpace -gt 0) { "$MaxPvsPercentOfFreeSpace%" } else { '(disabled)' })"
         "StatusInterval   : $StatusIntervalSeconds s"
         "LogFile          : $LogPath"
         '----------------------------------------------------------'
     ) | ForEach-Object { Write-ShrinkLog $_ }
     if ($WaitAtLowPriority -and $AbortAfterWait -eq 'BLOCKERS') {
         Write-ShrinkLog 'AbortAfterWait=BLOCKERS will roll back transactions that block shrink. Use with caution.' 'WARN'
+    }
+    if ($MaxLogUsedPercent -gt 85) {
+        Write-ShrinkLog ("MaxLogUsedPercent is high ({0}%); remaining log space may be insufficient for rollback." -f $MaxLogUsedPercent) 'WARN'
     }
     # Stuck detection only runs at each status report, so a stuck window finer than the report
     # cadence cannot be honored. Raise it to the report interval and tell the user.
@@ -387,6 +405,135 @@ WHERE df.type_desc = 'ROWS' AND df.state_desc = 'ONLINE' AND fg.is_read_only = 0
         try {
             if ($rd.Read()) { @{ Alloc = [double]$rd['alloc_mb']; Used = [double]$rd['used_mb'] } } else { @{ Alloc = 0.0; Used = 0.0 } }
         } finally { $rd.Dispose(); $cmd.Dispose() }
+    }
+
+    function Get-ShrinkResourceStats {
+        <# .SYNOPSIS Transaction log and PVS figures for the safety valve, read in one query: log used and
+           ceiling bytes (ceiling from each log file's max size, or its current size when the max is unset),
+           the log reuse-wait reason, PVS size, and the free space PVS can grow into (data-file unallocated
+           space plus remaining growth to the maximum size). File IDs whose max size is unset - so current
+           size was used as the ceiling - are returned so the stop message can flag a possibly premature
+           stop. #>
+        param([Microsoft.Data.SqlClient.SqlConnection]$Conn)
+        $sql = @'
+SELECT
+    ISNULL(lsu.used_log_space_in_bytes, 0) AS log_used_bytes,
+    ISNULL(lg.log_ceiling_bytes, 0) AS log_ceiling_bytes,
+    lg.log_fallback_files,
+    d.log_reuse_wait_desc,
+    pv.pvs_kb,
+    dt.data_headroom_kb,
+    dt.data_fallback_files,
+    fs.data_unalloc_kb
+FROM sys.dm_db_log_space_usage AS lsu
+CROSS JOIN (
+    SELECT SUM(CASE WHEN max_size = -1 THEN CAST(size AS bigint) ELSE CAST(max_size AS bigint) END) * 8192 AS log_ceiling_bytes,
+           STRING_AGG(CASE WHEN max_size = -1 THEN CAST(file_id AS varchar(11)) END, ',') AS log_fallback_files
+    FROM sys.database_files
+    WHERE type = 1
+) AS lg
+CROSS JOIN (
+    SELECT log_reuse_wait_desc
+    FROM sys.databases
+    WHERE database_id = DB_ID()
+) AS d
+CROSS JOIN (
+    SELECT ISNULL(SUM(persistent_version_store_size_kb), 0) AS pvs_kb
+    FROM sys.dm_tran_persistent_version_store_stats WHERE database_id = DB_ID()
+) AS pv
+CROSS JOIN (
+    SELECT ISNULL(SUM(CASE WHEN max_size = -1 THEN 0 ELSE CAST(max_size AS bigint) - CAST(size AS bigint) END), 0) * 8 AS data_headroom_kb,
+           STRING_AGG(CASE WHEN max_size = -1 THEN CAST(file_id AS varchar(11)) END, ',') AS data_fallback_files
+    FROM sys.database_files
+    WHERE type = 0 AND state_desc = 'ONLINE' AND is_read_only = 0
+) AS dt
+CROSS JOIN (
+    SELECT ISNULL(SUM(CAST(fsu.unallocated_extent_page_count AS bigint)), 0) * 8 AS data_unalloc_kb
+    FROM sys.dm_db_file_space_usage AS fsu
+    JOIN sys.database_files AS mf ON mf.file_id = fsu.file_id
+    WHERE mf.type = 0 AND mf.state_desc = 'ONLINE' AND mf.is_read_only = 0
+) AS fs;
+'@
+        $cmd = $Conn.CreateCommand(); $cmd.CommandText = $sql; $cmd.CommandTimeout = 60
+        $rd = $cmd.ExecuteReader()
+        try {
+            if ($rd.Read()) {
+                [pscustomobject]@{
+                    LogUsedBytes      = [double]$rd['log_used_bytes']
+                    LogCeilingBytes   = [double]$rd['log_ceiling_bytes']
+                    LogFallbackFiles  = if ($rd['log_fallback_files'] -is [DBNull]) { '' } else { [string]$rd['log_fallback_files'] }
+                    LogReuseWaitDesc  = if ($rd['log_reuse_wait_desc'] -is [DBNull]) { '' } else { [string]$rd['log_reuse_wait_desc'] }
+                    PvsKb             = [double]$rd['pvs_kb']
+                    DataHeadroomKb    = [double]$rd['data_headroom_kb']
+                    DataFallbackFiles = if ($rd['data_fallback_files'] -is [DBNull]) { '' } else { [string]$rd['data_fallback_files'] }
+                    DataUnallocKb     = [double]$rd['data_unalloc_kb']
+                }
+            } else { $null }
+        } finally { $rd.Dispose(); $cmd.Dispose() }
+    }
+
+    function Get-ShrinkOldestTranInfo {
+        <# .SYNOPSIS The oldest active write transaction in the database (session id, transaction name,
+           program name) - the holder of the log MinLSN - or $null. A read-only snapshot reader has no
+           database_transaction_begin_time and is excluded here on purpose; the PVS low-watermark holder is
+           found by Get-ShrinkPvsHolderInfo. Structured form used by the safety valve to attribute a stop to a
+           specific session; the worker's Get-ShrinkOldestTran returns a display string instead. #>
+        param([Microsoft.Data.SqlClient.SqlConnection]$Conn)
+        $sql = @'
+SELECT TOP (1) s.session_id AS spid, at.name AS tran_name, s.program_name AS prog
+FROM sys.dm_tran_database_transactions AS dt
+JOIN sys.dm_tran_session_transactions AS st ON st.transaction_id = dt.transaction_id
+JOIN sys.dm_exec_sessions AS s ON s.session_id = st.session_id
+LEFT JOIN sys.dm_tran_active_transactions AS at ON at.transaction_id = dt.transaction_id
+WHERE dt.database_id = DB_ID() AND dt.database_transaction_begin_time IS NOT NULL
+ORDER BY dt.database_transaction_begin_time ASC;
+'@
+        $cmd = $Conn.CreateCommand(); $cmd.CommandText = $sql; $cmd.CommandTimeout = 60
+        try {
+            $rd = $cmd.ExecuteReader()
+            try {
+                if ($rd.Read()) {
+                    [pscustomobject]@{
+                        Spid     = [int]$rd['spid']
+                        TranName = if ($rd['tran_name'] -is [DBNull]) { '' } else { [string]$rd['tran_name'] }
+                        Prog     = if ($rd['prog'] -is [DBNull]) { '' } else { [string]$rd['prog'] }
+                    }
+                } else { $null }
+            } finally { $rd.Dispose() }
+        } catch { $null } finally { $cmd.Dispose() }
+    }
+
+    function Get-ShrinkPvsHolderInfo {
+        <# .SYNOPSIS The session pinning the PVS low watermark: the oldest active snapshot transaction in the
+           database, from sys.dm_tran_active_snapshot_database_transactions. A read-only snapshot / RCSI reader
+           - a common cause of version-store growth - holds the watermark but has no
+           database_transaction_begin_time, so Get-ShrinkOldestTranInfo cannot see it. Falls back to the oldest
+           write transaction when no snapshot is held (for example, another shrink transaction pinning the watermark). #>
+        param([Microsoft.Data.SqlClient.SqlConnection]$Conn)
+        $sql = @'
+SELECT TOP (1) s.session_id AS spid, at.name AS tran_name, s.program_name AS prog
+FROM sys.dm_tran_active_snapshot_database_transactions AS snap
+JOIN sys.dm_exec_sessions AS s ON s.session_id = snap.session_id
+LEFT JOIN sys.dm_tran_active_transactions AS at ON at.transaction_id = snap.transaction_id
+WHERE s.is_user_process = 1
+ORDER BY snap.transaction_sequence_num ASC;
+'@
+        $result = $null
+        $cmd = $Conn.CreateCommand(); $cmd.CommandText = $sql; $cmd.CommandTimeout = 60
+        try {
+            $rd = $cmd.ExecuteReader()
+            try {
+                if ($rd.Read()) {
+                    $result = [pscustomobject]@{
+                        Spid     = [int]$rd['spid']
+                        TranName = if ($rd['tran_name'] -is [DBNull]) { '' } else { [string]$rd['tran_name'] }
+                        Prog     = if ($rd['prog'] -is [DBNull]) { '' } else { [string]$rd['prog'] }
+                    }
+                }
+            } finally { $rd.Dispose() }
+        } catch { $result = $null } finally { $cmd.Dispose() }
+        if ($null -eq $result) { $result = Get-ShrinkOldestTranInfo -Conn $Conn }
+        $result
     }
 
     # Report mode: read the file sizes, print the shrink-potential report, and exit without
@@ -852,7 +999,12 @@ ORDER BY dt.database_transaction_begin_time ASC;
                 # the space it reclaimed even when cancelled, so a fresh measurement is authoritative. A
                 # forced quit (second Ctrl+C) or a lost connection leaves the file Interrupted instead.
                 if (-not $bucket -and $shared.Stop) {
-                    $cause = if ($shared.StopReason -eq 'Timeout') { 'Timeout' } else { 'Ctrl+C' }
+                    $cause = switch ($shared.StopReason) {
+                        'Timeout'   { 'Timeout' }
+                        'LogFull'   { 'LogFull' }
+                        'PvsGrowth' { 'PvsGrowth' }
+                        default     { 'Ctrl+C' }
+                    }
                     # Re-measure the file's real size (unless force-quitting or the connection is gone).
                     # DBCC SHRINKFILE keeps the space it reclaimed even when cancelled, so a fresh read is
                     # authoritative. Track the command so a second Ctrl+C can cancel it if the server hangs.
@@ -1091,6 +1243,56 @@ FROM sys.dm_exec_requests r WHERE r.session_id IN ($inList);
                 catch {
                     Write-ShrinkLog ("Status report skipped (control connection issue): {0}" -f $_.Exception.Message.Split([Environment]::NewLine)[0]) 'WARN'
                     try { $control = Get-ShrinkLiveControl $control } catch { Write-ShrinkLog ("Control reconnect failed; will retry at the next report: {0}" -f $_.Exception.Message.Split([Environment]::NewLine)[0]) 'WARN' }
+                }
+                # Safety valve: evaluated at the report cadence on the same control connection. Some
+                # shrink transactions are fully logged, and a long-running shrink transaction pins
+                # the low watermark on the database. If the log or PVS size exceeds a threshold, stop
+                # the run - regardless of whether shrink itself causes the high usage, since
+                # continuing can make it worse.
+                if (-not $shared.Stop -and ($MaxLogUsedPercent -gt 0 -or $MaxPvsPercentOfFreeSpace -gt 0)) {
+                    try {
+                        $control = Get-ShrinkLiveControl $control
+                        $stat = Get-ShrinkResourceStats -Conn $control
+                        if ($stat) {
+                            $freeKb = $stat.DataHeadroomKb + $stat.DataUnallocKb
+                            $p = Test-ShrinkResourcePressure -LogUsedBytes $stat.LogUsedBytes -LogCeilingBytes $stat.LogCeilingBytes `
+                                -MaxLogUsedPercent $MaxLogUsedPercent -PvsKb $stat.PvsKb -FreeForGrowthKb $freeKb `
+                                -MaxPvsPercentOfFreeSpace $MaxPvsPercentOfFreeSpace
+                            if ($p.Breach) {
+                                # Attribute the hold to a session only when a transaction is (or would be) the
+                                # holder: for PVS the oldest active snapshot pins the low watermark; for the log
+                                # the oldest active write transaction holds the MinLSN when its reuse wait is
+                                # ACTIVE_TRANSACTION.
+                                $holderText = ''; $holderSpid = 0; $holderIsWorker = $null
+                                if ($p.Breach -eq 'PvsGrowth' -or $stat.LogReuseWaitDesc -eq 'ACTIVE_TRANSACTION') {
+                                    $oldest = if ($p.Breach -eq 'PvsGrowth') { Get-ShrinkPvsHolderInfo -Conn $control } else { Get-ShrinkOldestTranInfo -Conn $control }
+                                    if ($oldest) {
+                                        $holderSpid = [int]$oldest.Spid
+                                        $workerBySpid = @{}
+                                        foreach ($sess in $shared.Sessions.GetEnumerator()) { if ($sess.Value.Spid) { $workerBySpid[[int]$sess.Value.Spid] = $sess.Key } }
+                                        if ($workerBySpid.ContainsKey($holderSpid)) {
+                                            $lab = if ($oldest.TranName) { $oldest.TranName } elseif ($oldest.Prog) { $oldest.Prog } else { '' }
+                                            $holderText = if ($lab) { "session $holderSpid ($lab, worker $($workerBySpid[$holderSpid]))" } else { "session $holderSpid (worker $($workerBySpid[$holderSpid]))" }
+                                            $holderIsWorker = $true
+                                        } else {
+                                            $lab = if ($oldest.Prog) { $oldest.Prog } elseif ($oldest.TranName) { $oldest.TranName } else { '' }
+                                            $holderText = if ($lab) { "session $holderSpid ($lab, not a shrink worker)" } else { "session $holderSpid (not a shrink worker)" }
+                                            $holderIsWorker = $false
+                                        }
+                                    }
+                                }
+                                $fallback = if ($p.Breach -eq 'LogFull') { $stat.LogFallbackFiles } else { $stat.DataFallbackFiles }
+                                $msg = Format-ShrinkSafetyValveMessage -Breach $p.Breach -LogPercent $p.LogPercent -PvsPercent $p.PvsPercent `
+                                    -PvsKb $stat.PvsKb -FreeForGrowthKb $freeKb -LogReuseWaitDesc $stat.LogReuseWaitDesc `
+                                    -HolderText $holderText -HolderSpid $holderSpid -HolderIsWorker $holderIsWorker -FallbackFiles $fallback
+                                Write-ShrinkLog $msg 'WARN'
+                                $shared.StopReason = $p.Breach
+                                $shared.Stop = $true
+                                foreach ($sess in $shared.Sessions.Values) { if ($sess.Command) { try { $sess.Command.Cancel() } catch {} } }
+                            }
+                        }
+                    }
+                    catch { Write-ShrinkLog ("Safety-valve check skipped (control connection issue): {0}" -f $_.Exception.Message.Split([Environment]::NewLine)[0]) 'WARN' }
                 }
                 $nextReportAtS = $runClock.Elapsed.TotalSeconds + $StatusIntervalSeconds
             }
@@ -1474,10 +1676,15 @@ function Get-ShrinkStopOutcome {
     param(
         [Nullable[long]]$StartAllocMB,
         [Nullable[long]]$FinalAllocMB,
-        [ValidateSet('Timeout', 'Ctrl+C')][string]$Cause = 'Ctrl+C',
+        [ValidateSet('Timeout', 'Ctrl+C', 'LogFull', 'PvsGrowth')][string]$Cause = 'Ctrl+C',
         [switch]$Force
     )
-    $causeText = if ($Cause -eq 'Timeout') { 'run time limit reached' } else { 'stopped early (Ctrl+C)' }
+    $causeText = switch ($Cause) {
+        'Timeout'   { 'run time limit reached' }
+        'LogFull'   { 'transaction log safety limit reached' }
+        'PvsGrowth' { 'version store (PVS) safety limit reached' }
+        default     { 'stopped early (Ctrl+C)' }
+    }
     if ($Force) {
         return [pscustomobject]@{ Bucket = 'Interrupted'; Reason = 'stopped immediately (Ctrl+C pressed twice); the final size was not measured' }
     }
@@ -1494,6 +1701,85 @@ function Get-ShrinkStopOutcome {
         return [pscustomobject]@{ Bucket = 'Grew'; Reason = "$causeText; grew from $(Format-ShrinkSize $StartAllocMB) to $(Format-ShrinkSize $FinalAllocMB) (other workloads adding data)" }
     }
     return [pscustomobject]@{ Bucket = 'Interrupted'; Reason = "$causeText before this file made measurable progress" }
+}
+
+function Test-ShrinkResourcePressure {
+    <# .SYNOPSIS
+      Evaluate the transaction-log and PVS safety thresholds from raw resource figures. Returns the
+      computed log and PVS percentages and which limit (if any) is breached ('LogFull', 'PvsGrowth',
+      or '' for none). The log is checked first because running out of log is more disruptive than
+      version-store growth. A threshold of 0 disables that check. A zero denominator - a log ceiling or PVS
+      growth room of zero - with any usage present is reported as 100% (a divide-by-zero guard). #>
+    [CmdletBinding()][OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][double]$LogUsedBytes,
+        [Parameter(Mandatory)][double]$LogCeilingBytes,
+        [Parameter(Mandatory)][int]$MaxLogUsedPercent,
+        [Parameter(Mandatory)][double]$PvsKb,
+        [Parameter(Mandatory)][double]$FreeForGrowthKb,
+        [Parameter(Mandatory)][int]$MaxPvsPercentOfFreeSpace
+    )
+    $logPct = if ($LogCeilingBytes -gt 0) { $LogUsedBytes / $LogCeilingBytes * 100.0 } elseif ($LogUsedBytes -gt 0) { 100.0 } else { 0.0 }
+    # PVS is measured against the space it can still grow into; no runway with any PVS present is a breach.
+    $pvsPct = if ($FreeForGrowthKb -gt 0) { $PvsKb / $FreeForGrowthKb * 100.0 } elseif ($PvsKb -gt 0) { 100.0 } else { 0.0 }
+    $breach = ''
+    if ($MaxLogUsedPercent -gt 0 -and $logPct -ge $MaxLogUsedPercent) { $breach = 'LogFull' }
+    elseif ($MaxPvsPercentOfFreeSpace -gt 0 -and $pvsPct -ge $MaxPvsPercentOfFreeSpace) { $breach = 'PvsGrowth' }
+    [pscustomobject]@{ LogPercent = $logPct; PvsPercent = $pvsPct; Breach = $breach }
+}
+
+function Format-ShrinkSafetyValveMessage {
+    <# .SYNOPSIS
+      Build the one-line message logged when the safety valve stops the run. States the breached metric,
+      that the run is aborting, who holds the resource, and what aborting will (and will not) achieve -
+      the log frees only after the holding transaction's rollback completes, and only if a shrink worker
+      holds it. HolderText is the pre-resolved holder descriptor (e.g. 'session 71 (MoveBlobPage, worker
+      3)'), HolderIsWorker whether that session is one of our workers. #>
+    [CmdletBinding()][OutputType([string])]
+    param(
+        [Parameter(Mandatory)][ValidateSet('LogFull', 'PvsGrowth')][string]$Breach,
+        [Parameter(Mandatory)][double]$LogPercent,
+        [Parameter(Mandatory)][double]$PvsPercent,
+        [double]$PvsKb = 0,
+        [double]$FreeForGrowthKb = 0,
+        [string]$LogReuseWaitDesc = '',
+        [string]$HolderText = '',
+        [int]$HolderSpid = 0,
+        [Nullable[bool]]$HolderIsWorker = $null,
+        [string]$FallbackFiles = ''
+    )
+    $caveat = if ($FallbackFiles) { " (max size unset on file(s) $FallbackFiles; used current size as ceiling - stop may be premature because file growth ceiling is unknown.)" } else { '' }
+    if ($Breach -eq 'LogFull') {
+        $m = 'Log {0:N0}% of max - aborting run.' -f $LogPercent
+        if ($LogReuseWaitDesc -eq 'ACTIVE_TRANSACTION' -and $HolderText) {
+            if ($HolderIsWorker -eq $true) {
+                $m += " Reuse blocked by $HolderText; log frees once that transaction's rollback completes."
+            } else {
+                $m += " Reuse blocked by $HolderText; aborting won't free the log until the transaction on session $HolderSpid completes."
+            }
+        } elseif ($LogReuseWaitDesc -eq 'ACTIVE_TRANSACTION') {
+            $m += " Reuse blocked by an active transaction; aborting frees the log only if it is a transaction started by this script."
+        } elseif ($LogReuseWaitDesc) {
+            $m += " Reuse wait is $LogReuseWaitDesc; aborting won't free the log."
+        } else {
+
+            $m += " Aborting frees the log only if a transaction started by this script is holding it."
+        }
+        return "$m$caveat"
+    }
+    $pvsMB = $PvsKb / 1024.0
+    $runwayMB = $FreeForGrowthKb / 1024.0
+    $m = 'PVS {0:N0}% of growth runway ({1} / {2}) - aborting run.' -f $PvsPercent, (Format-ShrinkSize $pvsMB), (Format-ShrinkSize $runwayMB)
+    if ($HolderText) {
+        if ($HolderIsWorker -eq $true) {
+            $m += " Low watermark pinned by $HolderText; PVS cleanup resumes after that transaction's rollback completes."
+        } else {
+            $m += " Oldest active transaction is $HolderText, pinning the low watermark; aborting won't reclaim PVS until the transaction on session $HolderSpid completes."
+        }
+    } else {
+        $m += " Aborting reclaims PVS only if a shrink transaction is pinning the low watermark."
+    }
+    return "$m$caveat"
 }
 
 function Test-ShrinkParameterSet {
