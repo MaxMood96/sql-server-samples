@@ -2,6 +2,14 @@
 
 All notable changes to the ShrinkDriver sample are documented in this file.
 
+## [1.2.0] - 2026-09-11
+
+### Added
+
+- Safety valve (on by default): the run stops if the size of active transaction log or 
+  the size of the persistent version store (PVS) nears a level where the shrink itself
+  could cause an out-of-log condition or grow the database.
+
 ## [1.1.0] - 2026-08-27
 
 ### Changed
